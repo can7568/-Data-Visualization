@@ -1,0 +1,675 @@
+---
+title: "house_price"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Project.2: House Prices Advanced Regression Techniques
+
+부동산 가격 데이터셋 분석을 통해 주택가격에 영향을 미치는 요인을 분석할 것임.
+
+## 분석계획
+  - 데이터 정제 및 변수 선택
+  - 데이터 시각화
+  - 선형회귀모델
+
+
+
+## 데이터 정제 및 변수 선택
+```{r library, echo=FALSE}
+
+library(hrbrthemes)
+library(dplyr)
+require(ggplot2)
+library(data.table)
+library(FeatureHashing)
+library(Matrix)
+library(xgboost)
+library(pROC)
+library(stringr)
+library(dummies)
+library(Metrics)
+library(kernlab)
+library(mlbench)
+library(tidyverse)
+library(skimr)
+library(corrplot)
+library(car)
+library(randomForest)
+library(caret)
+```
+
+# 데이터 호출
+```{r read_csv, echo=FALSE}
+train <- read_csv("train (1).csv")
+test <- read_csv("test (1).csv")
+```
+
+# 데이터 구조 확인
+```{r str, echo=FALSE}
+str(train)
+```
+
+변수 81개(문자형 43개, 숫자형 38개), 총 행 1460개
+
+
+
+# 기술통계분석
+```{r skim, echo=FALSE}
+skim(train)
+```
+
+
+# 데이터 포매팅
+
+도로 포장 여부에 따라 Street 컬럼 값을 0 또는 1로 대체하는 등 수치화가 가능한 칼럼들의 값을 포매팅함
+
+```{r formatting, echo=FALSE}
+
+# 컬럼 체크
+table(train$Street)
+
+train$paved[train$Street == "Pave"] <- 1
+train$paved[train$Street != "Pave"] <- 0
+
+table(train$LotShape)
+
+train$regshape[train$LotShape == "Reg"] <- 1
+train$regshape[train$LotShape != "Reg"] <- 0
+
+table(train$LandContour)
+
+train$flat[train$LandContour == "Lvl"] <- 1
+train$flat[train$LandContour != "Lvl"] <- 0
+
+table(train$Utilities)
+
+train$pubutil[train$Utilities == "AllPub"] <- 1
+train$pubutil[train$Utilities != "AllPub"] <- 0
+
+table(train$LandSlope)
+
+train$gentle_slope[train$LandSlope == "Gtl"] <- 1
+train$gentle_slope[train$LandSlope != "Gtl"] <- 0
+
+```
+
+```{r groupmeans_lotconfig, echo=FALSE}
+# summarize(group_by(train, LotConfig),
+#           mean(SalePrice, na.rm=T))
+
+train$culdesac_fr3[train$LandSlope %in% c("CulDSac", "FR3")] <- 1
+train$culdesac_fr3[!train$LandSlope %in% c("CulDSac", "FR3")] <- 0
+
+```
+
+```{r groupmeans_nbhd, echo=FALSE}
+nbhdprice <- summarize(group_by(train, Neighborhood),
+          mean(SalePrice, na.rm=T))
+
+#nbhdprice[order(nbhdprice$`mean(SalePrice, na.rm = T)`),]
+
+nbhdprice_lo <- filter(nbhdprice, nbhdprice$`mean(SalePrice, na.rm = T)` < 140000)
+nbhdprice_med <- filter(nbhdprice, nbhdprice$`mean(SalePrice, na.rm = T)` < 200000 &
+                          nbhdprice$`mean(SalePrice, na.rm = T)` >= 140000 )
+nbhdprice_hi <- filter(nbhdprice, nbhdprice$`mean(SalePrice, na.rm = T)` >= 200000)
+
+train$nbhd_price_level[train$Neighborhood %in% nbhdprice_lo$Neighborhood] <- 1
+train$nbhd_price_level[train$Neighborhood %in% nbhdprice_med$Neighborhood] <- 2
+train$nbhd_price_level[train$Neighborhood %in% nbhdprice_hi$Neighborhood] <- 3
+
+# summarize(group_by(train, Condition1),
+#           mean(SalePrice, na.rm=T))
+
+train$pos_features_1[train$Condition1 %in% c("PosA", "PosN")] <- 1
+train$pos_features_1[!train$Condition1 %in% c("PosA", "PosN")] <- 0
+
+# summarize(group_by(train, Condition2),
+#           mean(SalePrice, na.rm=T))
+
+train$pos_features_2[train$Condition1 %in% c("PosA", "PosN")] <- 1
+train$pos_features_2[!train$Condition1 %in% c("PosA", "PosN")] <- 0
+
+```
+
+```{r groupmeans_bldg, echo=FALSE}
+# summarize(group_by(train, BldgType),
+#           mean(SalePrice, na.rm=T))
+
+train$twnhs_end_or_1fam[train$BldgType %in% c("1Fam", "TwnhsE")] <- 1
+train$twnhs_end_or_1fam[!train$BldgType %in% c("1Fam", "TwnhsE")] <- 0
+
+housestyle_price <- summarize(group_by(train, HouseStyle),
+          mean(SalePrice, na.rm=T))
+
+housestyle_lo <- filter(housestyle_price, housestyle_price$`mean(SalePrice, na.rm = T)` < 140000)
+housestyle_med <- filter(housestyle_price, housestyle_price$`mean(SalePrice, na.rm = T)` < 200000 &
+                          housestyle_price$`mean(SalePrice, na.rm = T)` >= 140000 )
+housestyle_hi <- filter(housestyle_price, housestyle_price$`mean(SalePrice, na.rm = T)` >= 200000)
+
+train$house_style_level[train$HouseStyle %in% housestyle_lo$HouseStyle] <- 1
+train$house_style_level[train$HouseStyle %in% housestyle_med$HouseStyle] <- 2
+train$house_style_level[train$HouseStyle %in% housestyle_hi$HouseStyle] <- 3
+
+
+roofstyle_price <- summarize(group_by(train, RoofStyle),
+          mean(SalePrice, na.rm=T))
+
+train$roof_hip_shed[train$RoofStyle %in% c("Hip", "Shed")] <- 1
+train$roof_hip_shed[!train$RoofStyle %in% c("Hip", "Shed")] <- 0
+
+roofmatl_price <- summarize(group_by(train, RoofMatl),
+          mean(SalePrice, na.rm=T))
+
+train$roof_matl_hi[train$RoofMatl %in% c("Membran", "WdShake", "WdShngl")] <- 1
+train$roof_matl_hi[!train$RoofMatl %in% c("Membran", "WdShake", "WdShngl")] <- 0
+
+
+price <- summarize(group_by(train, Exterior1st),
+          mean(SalePrice, na.rm=T))
+
+matl_lo_1 <- filter(price, price$`mean(SalePrice, na.rm = T)` < 140000)
+matl_med_1<- filter(price, price$`mean(SalePrice, na.rm = T)` < 200000 &
+                          price$`mean(SalePrice, na.rm = T)` >= 140000 )
+matl_hi_1 <- filter(price, price$`mean(SalePrice, na.rm = T)` >= 200000)
+
+train$exterior_1[train$Exterior1st %in% matl_lo_1$Exterior1st] <- 1
+train$exterior_1[train$Exterior1st %in% matl_med_1$Exterior1st] <- 2
+train$exterior_1[train$Exterior1st %in% matl_hi_1$Exterior1st] <- 3
+
+
+price <- summarize(group_by(train, Exterior2nd),
+          mean(SalePrice, na.rm=T))
+
+matl_lo <- filter(price, price$`mean(SalePrice, na.rm = T)` < 140000)
+matl_med <- filter(price, price$`mean(SalePrice, na.rm = T)` < 200000 &
+                          price$`mean(SalePrice, na.rm = T)` >= 140000 )
+matl_hi <- filter(price, price$`mean(SalePrice, na.rm = T)` >= 200000)
+
+train$exterior_2[train$Exterior2nd %in% matl_lo$Exterior2nd] <- 1
+train$exterior_2[train$Exterior2nd %in% matl_med$Exterior2nd] <- 2
+train$exterior_2[train$Exterior2nd %in% matl_hi$Exterior2nd] <- 3
+
+price <- summarize(group_by(train, MasVnrType),
+          mean(SalePrice, na.rm=T))
+
+train$exterior_mason_1[train$MasVnrType %in% c("Stone", "BrkFace") | is.na(train$MasVnrType)] <- 1
+train$exterior_mason_1[!train$MasVnrType %in% c("Stone", "BrkFace") & !is.na(train$MasVnrType)] <- 0
+
+
+price <- summarize(group_by(train, ExterQual),
+          mean(SalePrice, na.rm=T))
+
+train$exterior_cond[train$ExterQual == "Ex"] <- 4
+train$exterior_cond[train$ExterQual == "Gd"] <- 3
+train$exterior_cond[train$ExterQual == "TA"] <- 2
+train$exterior_cond[train$ExterQual == "Fa"] <- 1
+
+
+price <- summarize(group_by(train, ExterCond),
+          mean(SalePrice, na.rm=T))
+
+train$exterior_cond2[train$ExterCond == "Ex"] <- 5
+train$exterior_cond2[train$ExterCond == "Gd"] <- 4
+train$exterior_cond2[train$ExterCond == "TA"] <- 3
+train$exterior_cond2[train$ExterCond == "Fa"] <- 2
+train$exterior_cond2[train$ExterCond == "Po"] <- 1
+
+```
+
+```{r groupmeans_base, echo=FALSE}
+
+price <- summarize(group_by(train, Foundation),
+          mean(SalePrice, na.rm=T))
+
+train$found_concrete[train$Foundation == "PConc"] <- 1
+train$found_concrete[train$Foundation != "PConc"] <- 0
+
+
+price <- summarize(group_by(train, BsmtQual),
+          mean(SalePrice, na.rm=T))
+
+train$bsmt_cond1[train$BsmtQual == "Ex"] <- 5
+train$bsmt_cond1[train$BsmtQual == "Gd"] <- 4
+train$bsmt_cond1[train$BsmtQual == "TA"] <- 3
+train$bsmt_cond1[train$BsmtQual == "Fa"] <- 2
+train$bsmt_cond1[is.na(train$BsmtQual)] <- 1
+
+
+price <- summarize(group_by(train, BsmtCond),
+          mean(SalePrice, na.rm=T))
+
+train$bsmt_cond2[train$BsmtCond == "Gd"] <- 5
+train$bsmt_cond2[train$BsmtCond == "TA"] <- 4
+train$bsmt_cond2[train$BsmtCond == "Fa"] <- 3
+train$bsmt_cond2[is.na(train$BsmtCond)] <- 2
+train$bsmt_cond2[train$BsmtCond == "Po"] <- 1
+
+
+price <- summarize(group_by(train, BsmtExposure),
+          mean(SalePrice, na.rm=T))
+
+train$bsmt_exp[train$BsmtExposure == "Gd"] <- 5
+train$bsmt_exp[train$BsmtExposure == "Av"] <- 4
+train$bsmt_exp[train$BsmtExposure == "Mn"] <- 3
+train$bsmt_exp[train$BsmtExposure == "No"] <- 2
+train$bsmt_exp[is.na(train$BsmtExposure)] <- 1
+
+
+price <- summarize(group_by(train, BsmtFinType1),
+          mean(SalePrice, na.rm=T))
+
+train$bsmt_fin1[train$BsmtFinType1 == "GLQ"] <- 5
+train$bsmt_fin1[train$BsmtFinType1 == "Unf"] <- 4
+train$bsmt_fin1[train$BsmtFinType1 == "ALQ"] <- 3
+train$bsmt_fin1[train$BsmtFinType1 %in% c("BLQ", "Rec", "LwQ")] <- 2
+train$bsmt_fin1[is.na(train$BsmtFinType1)] <- 1
+
+
+
+price <- summarize(group_by(train, BsmtFinType2),
+          mean(SalePrice, na.rm=T))
+
+train$bsmt_fin2[train$BsmtFinType2 == "ALQ"] <- 6
+train$bsmt_fin2[train$BsmtFinType2 == "Unf"] <- 5
+train$bsmt_fin2[train$BsmtFinType2 == "GLQ"] <- 4
+train$bsmt_fin2[train$BsmtFinType2 %in% c("Rec", "LwQ")] <- 3
+train$bsmt_fin2[train$BsmtFinType2 == "BLQ"] <- 2
+train$bsmt_fin2[is.na(train$BsmtFinType2)] <- 1
+
+```
+
+```{r hvac, echo=FALSE}
+
+price <- summarize(group_by(train, Heating),
+          mean(SalePrice, na.rm=T))
+
+
+train$gasheat[train$Heating %in% c("GasA", "GasW")] <- 1
+train$gasheat[!train$Heating %in% c("GasA", "GasW")] <- 0
+
+
+price <- summarize(group_by(train, HeatingQC),
+          mean(SalePrice, na.rm=T))
+
+train$heatqual[train$HeatingQC == "Ex"] <- 5
+train$heatqual[train$HeatingQC == "Gd"] <- 4
+train$heatqual[train$HeatingQC == "TA"] <- 3
+train$heatqual[train$HeatingQC == "Fa"] <- 2
+train$heatqual[train$HeatingQC == "Po"] <- 1
+
+
+price <- summarize(group_by(train, CentralAir),
+          mean(SalePrice, na.rm=T))
+
+train$air[train$CentralAir == "Y"] <- 1
+train$air[train$CentralAir == "N"] <- 0
+
+
+price <- summarize(group_by(train, Electrical),
+          mean(SalePrice, na.rm=T))
+
+train$standard_electric[train$Electrical == "SBrkr" | is.na(train$Electrical)] <- 1
+train$standard_electric[!train$Electrical == "SBrkr" & !is.na(train$Electrical)] <- 0
+
+
+price <- summarize(group_by(train, KitchenQual),
+          mean(SalePrice, na.rm=T))
+
+train$kitchen[train$KitchenQual == "Ex"] <- 4
+train$kitchen[train$KitchenQual == "Gd"] <- 3
+train$kitchen[train$KitchenQual == "TA"] <- 2
+train$kitchen[train$KitchenQual == "Fa"] <- 1
+
+
+price <- summarize(group_by(train, FireplaceQu),
+          mean(SalePrice, na.rm=T))
+
+train$fire[train$FireplaceQu == "Ex"] <- 5
+train$fire[train$FireplaceQu == "Gd"] <- 4
+train$fire[train$FireplaceQu == "TA"] <- 3
+train$fire[train$FireplaceQu == "Fa"] <- 2
+train$fire[train$FireplaceQu == "Po" | is.na(train$FireplaceQu)] <- 1
+
+```
+
+```{r cars, echo=FALSE}
+
+price <- summarize(group_by(train, GarageType),
+          mean(SalePrice, na.rm=T))
+
+train$gar_attach[train$GarageType %in% c("Attchd", "BuiltIn")] <- 1
+train$gar_attach[!train$GarageType %in% c("Attchd", "BuiltIn")] <- 0
+
+
+price <- summarize(group_by(train, GarageFinish),
+          mean(SalePrice, na.rm=T))
+
+train$gar_finish[train$GarageFinish %in% c("Fin", "RFn")] <- 1
+train$gar_finish[!train$GarageFinish %in% c("Fin", "RFn")] <- 0
+
+
+price <- summarize(group_by(train, GarageQual),
+          mean(SalePrice, na.rm=T))
+
+train$garqual[train$GarageQual == "Ex"] <- 5
+train$garqual[train$GarageQual == "Gd"] <- 4
+train$garqual[train$GarageQual == "TA"] <- 3
+train$garqual[train$GarageQual == "Fa"] <- 2
+train$garqual[train$GarageQual == "Po" | is.na(train$GarageQual)] <- 1
+
+
+price <- summarize(group_by(train, GarageCond),
+          mean(SalePrice, na.rm=T))
+
+train$garqual2[train$GarageCond == "Ex"] <- 5
+train$garqual2[train$GarageCond == "Gd"] <- 4
+train$garqual2[train$GarageCond == "TA"] <- 3
+train$garqual2[train$GarageCond == "Fa"] <- 2
+train$garqual2[train$GarageCond == "Po" | is.na(train$GarageCond)] <- 1
+
+
+price <- summarize(group_by(train, PavedDrive),
+          mean(SalePrice, na.rm=T))
+
+train$paved_drive[train$PavedDrive == "Y"] <- 1
+train$paved_drive[!train$PavedDrive != "Y"] <- 0
+train$paved_drive[is.na(train$paved_drive)] <- 0
+
+```
+
+```{r misc, echo=FALSE}
+price <- summarize(group_by(train, Functional),
+          mean(SalePrice, na.rm=T))
+
+train$housefunction[train$Functional %in% c("Typ", "Mod")] <- 1
+train$housefunction[!train$Functional %in% c("Typ", "Mod")] <- 0
+
+
+price <- summarize(group_by(train, PoolQC),
+          mean(SalePrice, na.rm=T))
+
+train$pool_good[train$PoolQC %in% c("Ex")] <- 1
+train$pool_good[!train$PoolQC %in% c("Ex")] <- 0
+
+
+price <- summarize(group_by(train, Fence),
+          mean(SalePrice, na.rm=T))
+
+train$priv_fence[train$Fence %in% c("GdPrv")] <- 1
+train$priv_fence[!train$Fence %in% c("GdPrv")] <- 0
+
+
+price <- summarize(group_by(train, MiscFeature),
+          mean(SalePrice, na.rm=T))
+#This doesn't seem worth using at the moment. May adjust later.
+
+
+price <- summarize(group_by(train, SaleType),
+          mean(SalePrice, na.rm=T))
+
+# price[order(price$`mean(SalePrice, na.rm = T)`),]
+
+train$sale_cat[train$SaleType %in% c("New", "Con")] <- 5
+train$sale_cat[train$SaleType %in% c("CWD", "ConLI")] <- 4
+train$sale_cat[train$SaleType %in% c("WD")] <- 3
+train$sale_cat[train$SaleType %in% c("COD", "ConLw", "ConLD")] <- 2
+train$sale_cat[train$SaleType %in% c("Oth")] <- 1
+
+
+price <- summarize(group_by(train, SaleCondition),
+          mean(SalePrice, na.rm=T))
+
+# price[order(price$`mean(SalePrice, na.rm = T)`),]
+
+train$sale_cond[train$SaleCondition %in% c("Partial")] <- 4
+train$sale_cond[train$SaleCondition %in% c("Normal", "Alloca")] <- 3
+train$sale_cond[train$SaleCondition %in% c("Family","Abnorml")] <- 2
+train$sale_cond[train$SaleCondition %in% c("AdjLand")] <- 1
+
+
+price <- summarize(group_by(train, MSZoning),
+          mean(SalePrice, na.rm=T))
+
+# price[order(price$`mean(SalePrice, na.rm = T)`),]
+
+train$zone[train$MSZoning %in% c("FV")] <- 4
+train$zone[train$MSZoning %in% c("RL")] <- 3
+train$zone[train$MSZoning %in% c("RH","RM")] <- 2
+train$zone[train$MSZoning %in% c("C (all)")] <- 1
+
+
+price <- summarize(group_by(train, Alley),
+          mean(SalePrice, na.rm=T))
+
+# price[order(price$`mean(SalePrice, na.rm = T)`),]
+
+train$alleypave[train$Alley %in% c("Pave")] <- 1
+train$alleypave[!train$Alley %in% c("Pave")] <- 0
+```
+
+# 기존의 불필요한 데이터 드랍
+```{r drop_old_vars, echo=FALSE}
+
+train$Street <- NULL
+train$LotShape <- NULL
+train$LandContour <- NULL
+train$Utilities <- NULL
+train$LotConfig <- NULL
+train$LandSlope <- NULL
+train$Neighborhood <- NULL
+train$Condition1 <- NULL
+train$Condition2 <- NULL
+train$BldgType <- NULL
+train$HouseStyle <- NULL
+train$RoofStyle <- NULL
+train$RoofMatl <- NULL
+
+train$Exterior1st <- NULL
+train$Exterior2nd <- NULL
+train$MasVnrType <- NULL
+train$ExterQual <- NULL
+train$ExterCond <- NULL
+
+train$Foundation <- NULL
+train$BsmtQual <- NULL
+train$BsmtCond <- NULL
+train$BsmtExposure <- NULL
+train$BsmtFinType1 <- NULL
+train$BsmtFinType2 <- NULL
+
+train$Heating <- NULL
+train$HeatingQC <- NULL
+train$CentralAir <- NULL
+train$Electrical <- NULL
+train$KitchenQual <- NULL
+train$FireplaceQu <- NULL
+
+train$GarageType <- NULL
+train$GarageFinish <- NULL
+train$GarageQual <- NULL
+train$GarageCond <- NULL
+train$PavedDrive <- NULL
+
+train$Functional <- NULL
+train$PoolQC <- NULL
+train$Fence <- NULL
+train$MiscFeature <- NULL
+train$SaleType <- NULL
+train$SaleCondition <- NULL
+train$MSZoning <- NULL
+train$Alley <- NULL
+
+```
+
+# 변수 생성
+```{r Xvalues, echo=False}
+colnames(train)[colnames(train) == "1stFlrSF"] <- "X1stFlrSF"
+colnames(train)[colnames(train) == "2ndFlrSF"] <- "X2ndFlrSF"
+colnames(train)[colnames(train) == "3SsnPorch"] <- "X3SsnPorch"
+```
+
+
+
+## 데이터 시각화
+
+가치있는 변수 탐색 및 선택
+
+```{r correlations 1, echo=FALSE}
+correlations <- cor(train[,c(5,6,7,8, 16:25)], use="everything")
+corrplot(correlations, method="circle", type="lower",  sig.level = 0.01, insig = "blank")
+```
+
+```{r correlations 2, echo=FALSE}
+correlations <- cor(train[,c(5,6,7,8, 26:35)], use="everything")
+corrplot(correlations, method="circle", type="lower",  sig.level = 0.01, insig = "blank")
+```
+
+```{r correlations 3, echo=FALSE}
+correlations <- cor(train[,c(5,6,7,8, 66:75)], use="everything")
+corrplot(correlations, method="circle", type="lower",  sig.level = 0.01, insig = "blank")
+```
+
+
+```{r correlations 4, echo=FALSE}
+corrplot(correlations, method="circle", type="lower",  sig.level = 0.01, insig = "blank")
+```
+
+  - 집의 등급(OverallQual)은 면적, 거실, 차고, 주방, 욕조, 정원 등 집의 면적과도 연관있는 공간의 등급과 상관관계가 높음
+
+
+# 매매 가격 분포
+```{r histo_SalePrice, echo=False}
+ggplot(train, aes(x = SalePrice)) + geom_histogram(bins = 60)
+```
+
+  - 주택가격 분포가 좌측으로 치우쳐 왜곡됨
+  
+
+# 매매 가격 로그 변환
+```{r histo_log_SalePrice, echo=False}
+ggplot(train, aes(x = SalePrice)) + geom_histogram(bins = 60) + scale_x_log10()
+```
+
+  - 로그변환으로 분포의 왜곡을 해결함
+
+
+# 주택 형태에 따른 매각주택 분포
+```{r box_MSSub}
+explore <- train
+explore$MSSubClass <- as.factor(explore$MSSubClass)
+ggplot(explore) + geom_bar(mapping = aes(x=MSSubClass)) # 
+```
+
+  - 전체 매각주택 중 20에 해당하는	1946년 이후에 건설된 1층 주택이 가장 많이 팔림
+  - 1946년 이후 건설된 2층 주택이 2번째로 많이 팔림(60에 해당)
+
+```{r box_MssubClass & SalePrice}
+explore %>%
+  ggplot( aes(x=MSSubClass, y=SalePrice, fill=MSSubClass)) +
+  geom_boxplot() +
+  scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+  geom_jitter(color="black", size=0.4, alpha=0.9) +
+  theme_ipsum() +
+  theme(
+    legend.position="none",
+    plot.title = element_text(size=11)
+  ) +
+  ggtitle("A boxplot with jitter") +
+  xlab("")
+```
+
+  - 주택 매각 가격은 1946년 이후 건설된 2층 주택(60)이 가장 높은 분포를 보임
+  - 2번째로 매각가격이 높은 것은 1946년 이후 건설된 재개발 예정 1층 주택임
+
+
+
+# 주거 구역에 따른 매각 주택 분류
+```{r histo_MSzoning}
+explore$MSZoning <- as.factor(explore$MSZoning)
+ggplot(explore) + geom_bar(mapping = aes(x=MSZoning))
+```
+
+   - 주택밀집도가 낮은 주택이 가장 많이 팔림.
+
+# 매각주택의 지하실 총 면적 규모 분포
+
+```{r histo_TotalBsmtSF}
+ggplot(explore) + geom_histogram(mapping = aes(x=TotalBsmtSF),bins = 50)
+```
+
+```{r scatter_TotalBsmtSF.vs.SalePrice, echo=FALSE}
+ggplot(explore,mapping = aes(x=TotalBsmtSF,y=SalePrice)) + geom_point() + geom_smooth(method = lm,formula = y~x)
+```
+
+  - 지하실의 총면적과 주택 매각가격이 밀접한 상관관계가 있음을 확인함
+
+# 매각주택규모 차고지 규모 분포
+```{r histo_GarageArea}
+ggplot(explore) + geom_histogram(mapping = aes(x=GarageArea),bins=50)
+
+```
+```{r scatter_GarageArea.vs.SalePrice}
+ggplot(explore,mapping = aes(x=GarageArea,y=SalePrice)) +  geom_point() + geom_smooth(method = lm,formula = y~x)
+
+```
+
+  - 차고지 면적과 주택 가격이 정비례하는 것을 확인
+  
+  
+# 매매가격 vs 건설년도
+```{r scatterplot_SalePrice ~ YearBuilt, echo=FALSE}
+scatterplot(SalePrice ~ YearBuilt, data=explore,  xlab="Year Built", ylab="Sale Price", grid=FALSE)
+```
+  
+  - 신축주택일수록 매각 가격이 비쌈
+  
+  
+# 매매가격 vs 매각연도
+```{r scatterplot_SalePrice ~ YrSold}
+scatterplot(SalePrice ~ YrSold, data=explore,  xlab="Year Sold", ylab="Sale Price", grid=FALSE)
+```
+
+  - 주택 매각 가격이 과거대비 미세하게 하락함
+# 매매가격 vs 주택 1층 면적
+```{r scatterplot_SalePrice ~ X1stFlrSF}
+scatterplot(SalePrice ~ X1stFlrSF, data=explore,  xlab="Square Footage Floor 1", ylab="Sale Price", grid=FALSE)
+```
+
+  - 1층 면적이 클 수록 주택 매각가격이 비쌈
+
+
+
+# 주택 평점 vs 매각 가격
+```{r houseprice}
+ggplot(data = explore, aes(x = OverallQual, y =  SalePrice)) +
+  geom_smooth(method = "lm", se = FALSE, formula = y ~ x) +
+  geom_point(color = 'steelblue') + scale_y_continuous(labels = scales::comma) +
+  scale_x_continuous(labels = scales::comma)
+
+qual.lm <- lm(formula = OverallQual ~ SalePrice, data = df2)
+summary(qual.lm)
+# resid(qual.lm) 잔차
+```
+
+    -건물의 품질이 올라갈수록 판매가격이 올라감
+
+# 건물토대 vs 매각 가격
+```{r houseprice}
+ggplot(data = explore, aes(x = Foundation, y = SalePrice)) + 
+  geom_point(color = 'red') + 
+  scale_y_continuous(labels = scales::comma)
+# BrkTil-Brick & Tile # CBlock - cinder + concrete
+# Slab - 대리석 등
+```
+
+  - 40만달러 이상의 판매가격은 대부분 PConc(콘크리트)로 지어진 건물
+  - 대리석, 돌, 벽돌, 나무로 지어진 건물들은 대부분 가격이 20만 달러 이하 
+```{r}
+linearModel <- lm(SalePrice ~ YrSold + GarageArea + TotalBsmtSF + LotArea + BedroomAbvGr, data=explore)
+linearModel
+```
+

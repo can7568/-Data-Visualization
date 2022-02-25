@@ -1,0 +1,302 @@
+---
+title: "Titanic분석"
+author: '240'
+date: '2022 2 25 '
+output: html_document
+---
+## 라이브러리
+```{r}
+library(gridExtra)
+library(tidyverse)
+library(ggthemes)
+library(corrplot)
+library(VIM)
+library(caret)
+library(RANN)
+library(reshape2)
+#install.packages("pscl")  
+library(pscl)
+library(dplyr)
+library(ggplot2)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+library(tidyverse)
+library(gridExtra)
+```
+
+## 데이터 불러오기 및 합치기
+```{r}
+train_data = read.csv("train.csv", na.strings = "")
+test_data = read.csv("test.csv", na.strings = "")
+
+data <- bind_rows(train_data, test_data)
+```
+
+## 데이터 확인
+```{r}
+    summary(data)
+```
+# 탐색적 데이터 분석과 데이터 시각화
+### Survival
+```{r}
+g1 <- ggplot(data[1:891,], aes(x = factor(Survived), fill = factor(Survived))) +
+  geom_bar(position = 'dodge') +
+  scale_x_discrete() +
+  labs(title = 'Survival on the Titanic', x = "outcome", y = "Count") +
+  scale_fill_discrete(name = "Outcome", labels = c("Died", "Survived")) +
+  theme(legend.position = "right") +
+  theme_classic()
+g1
+```
+
+### Sex
+```{r}
+
+g2 <- ggplot(data[1:891,], aes(x = factor(Sex), fill = factor(Survived))) +
+  geom_bar(position = 'dodge') +
+  scale_x_discrete() +
+  labs(title = "Survival by Gender", x = "Gender", y = "Rate") +
+  scale_fill_discrete(name = "Outcome", labels = c("Died", "Survived")) +
+  theme(legend.position = "right") +
+  theme_classic()
+
+g2
+```
+### Pclass
+```{r}
+g3 <- ggplot(data[1:891,], aes(x = factor(Pclass), fill = factor(Survived))) +
+  geom_bar(position = "dodge") +
+  scale_x_discrete() +
+  labs(title = "Survival by passenger Class", x = "Passenger Class", y = "Count") +
+  scale_fill_discrete(name = "Outcome", labels = c("Died", "Survived")) +
+  theme(legend.position = "right") +
+  theme_classic()
+
+
+g3
+```
+
+### Embarkment 
+```{r}
+g4 <- ggplot(data[1:891,], aes(x = factor(Embarked), fill = factor(Survived))) +
+    labs(title = "Survival by Embarkment", x = "Passenger Class", y = "Count") +
+  geom_bar(position = "dodge") +
+  theme(legend.position = "right") +
+  theme_classic()
+g4
+```
+
+
+### Age
+```{r}
+g5 <- ggplot(data[1:981,]) +
+  geom_freqpoly(aes(x = Age, color = factor(Survived)), binwidth = 1) +
+  theme_classic() +
+  
+  labs(title = "Survival by Age", x = "Age", y = "Count")
+g5
+```
+
+
+### Fare
+```{r}
+g6 <- ggplot(data[1:891,]) +
+  geom_freqpoly(aes( x = Fare, color = factor(Survived)), binwidth = 0.05) +
+  scale_x_log10() +
+  theme_classic() +
+  
+  labs(title = "Survival by Fare", x = "Fare", y ="Count")
+g6
+```
+### 종속변수 관계 확인
+```{r}
+with(data, table(Sex, Survived))
+
+```
+### 서로 독립이라는 귀무가설을 기각(서로 연관성이 있음)
+```{r}
+with(data, chisq.test(Sex, Survived))
+
+```
+## 나이대별 데이터
+```{r}
+age_df <- data.frame()
+```
+
+```{r}
+k <- 0
+
+for(i in 0:8){
+  col_name <- paste(k,"~",k+9)
+  recent_df <- filter(train, Age >= k & Age <= k+9)
+  recent_survived_ratio <- sum(recent_df$Survived) / nrow(recent_df)
+  
+  survived_df <- data.frame(age = c(col_name),
+                            survived_ratio = c(recent_survived_ratio),
+                            number_of_age = c(nrow(recent_df)))
+  age_df <- rbind(age_df, survived_df)
+  k <- k+10
+}
+```
+## 나이대 별 생존률 ggplot 점+선
+
+```{r}
+ggplot(age_df, aes(x=age, y=survived_ratio, group=1))+
+  geom_point(stat="identity")+
+  geom_line(stat="identity")
+
+```
+## 나이대 별 인구수 ggplot 막대그래프
+```{r}
+
+ggplot(age_df, aes(x=age, y=number_of_age))+geom_bar(stat="identity")
+```
+
+## 데이터 분석 결과
+#### 타이타닉 호의 승객의 대부분은 죽었다.
+#### 여성의 생존률이 남성보다 높다.
+#### 등급이 높을 수록 생존률이 높다.
+#### C 구역에서 탑승한 사람들이 다른 구역에서 탑승한 사람보다 생존률이 높다.
+#### 나이가 어릴수록 (16세 이하) 생존률이 높다.
+#### 일반적으로 높은 요금을 지불한 승객의 생존률이 높다.
+
+
+
+```{r}
+library(corrgram)
+windows(width=7.0, height=7.0)
+corrgram(data, 
+         main="타이타닉 변수별 상관관계 분석",
+         order=TRUE, 
+         lower.panel=panel.shade, 
+         upper.panel=panel.pie, 
+         text.panel=panel.txt)
+```
+## 결측치 처리
+
+```{r}
+aggr(data, sortVars = TRUE, prop = FALSE, cex.axis = .6, numbers = TRUE)
+```
+### Cabin과 Age에서 많은 결측치 확인
+### Survived는 제외
+
+## Age 평균으로 결측치 제거 
+```{r}
+data$Age[is.na(data$Age)] = mean(data$Age, na.rm = TRUE)
+```
+
+
+## Embarked 결측치
+```{r}
+data[is.na(data$Embarked), ] 
+embark_fare <- data[!is.na(data$Embarked), ]
+ggplot(embark_fare, aes(x = Embarked, y = Fare, fill = factor(Pclass))) +
+  geom_boxplot() +
+  geom_hline(aes(yintercept=80), # fare가 80에 line 생성
+             colour='red', linetype='dashed', lwd=2) +
+  scale_y_continuous()
+# fare가 80면서 Pclass가 1인 승객들 대다수는 Embark가 C이므로 C로 대체
+data$Embarked[c(62, 830)] <- 'C'
+data[c(62, 830),]
+```
+## Fare 결측치
+```{r}
+data  %>% filter(is.na(data$Fare)) #Pclasss가 3이고, Embarked는 S임
+data$Fare[1044] <- median(data[data$Pclass == '3' & data$Embarked == 'S', ]$Fare, na.rm = TRUE) #중앙값으로 결측치 처리
+```
+## Sex 데이터 타입 변환 
+```{r}
+data$Sex <- ifelse(data$Sex == "male" ,0 , 1)
+data$Sex <- as.factor(data$Sex)
+data$Sex = as.numeric(data$Sex)
+str(data)
+```
+
+```{r}
+nonvars = c("PassengerId","Name","Ticket","Embarked","Cabin")
+data = data[,!(names(data) %in% nonvars)]
+str(data)
+
+```
+### 상관계수 확인
+```{r}
+cor(data)
+```
+### 데이터 다시 나누기
+```{r}
+train <- data[1:891,]
+test <- data[892:1309,]
+
+```
+
+```{r}
+summary(train)
+summary(test)
+```
+## 로지스틱 회귀 모델 생성
+```{r}
+titanicLog1 = glm(Survived~., data = train, family = binomial)
+summary(titanicLog1)
+```
+### anova 분석
+```{r}
+anova(titanicLog1, test="Chisq")
+#Pclass, Sex, Age, sibSp 가 유의하다고 보여짐.
+```
+```{r}
+model = glm(Survived ~ . - Parch - Fare, data = train, family = binomial)
+summary(model)
+```
+
+```{r}
+par(mfrow = c(2,2))
+plot(model)
+```
+
+```{r}
+train <- data[1:891,]
+test <- data[892:1309,]
+model = glm(Survived ~ . - Parch - Fare, data = train, family = binomial)
+summary(model)
+```
+
+### train 데이터 적용
+```{r}
+predictTrain = predict(model, type = "response")
+```
+
+```{r}
+table(train$Survived, predictTrain >= 0.5)
+```
+
+### test 데이터 적용
+
+```{r}
+predictTest = predict(model, type = "response", newdata = test)
+test$Survived = as.numeric(predictTest >= 0.5)
+table(test$Survived)
+```
+##  예측
+
+```{r}
+pred <- predict(model,newdata=test,type='response')
+pred <- ifelse(pred > 0.5,1,0)
+confusionMatrix(data=as.factor(pred), reference=as.factor(test$Survived))
+```
+
+### Odds ratio(오즈비)
+```{r}
+exp(coef(model)) 
+#성별이 가장 큰 영향
+
+```
+
+```{r}
+pR2(model)
+```
+
+
+
+
+
